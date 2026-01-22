@@ -1,5 +1,8 @@
 #include <iostream>
 #include <string>
+#include <vector>
+#include <memory>
+
 using namespace std;
 
 struct Stats {
@@ -15,30 +18,19 @@ struct Weapon {
     string icon;
     int lastUseTime;
 
-    Weapon() {
-        name = "";
-        damage = 0;
-        cooldown = 0;
-        icon = "";
-        lastUseTime = -1000000;
+    Weapon() : name(""), damage(0), cooldown(0), icon(""), lastUseTime(-1000000) {}
+
+    Weapon(string n, int d, int cd, string ic)
+        : name(n), damage(d), cooldown(cd), icon(ic), lastUseTime(-1000000) {
     }
 
-    Weapon(string n, int d, int cd, string ic) {
-        name = n;
-        damage = d;
-        cooldown = cd;
-        icon = ic;
-        lastUseTime = -1000000;
-    }
-
-    bool isReady(int timeNow) {
+    bool isReady(int timeNow) const {
         return timeNow - lastUseTime >= cooldown;
     }
 
-    int remaining(int timeNow) {
+    int remaining(int timeNow) const {
         int left = cooldown - (timeNow - lastUseTime);
-        if (left < 0) return 0;
-        return left;
+        return left < 0 ? 0 : left;
     }
 
     bool use(int timeNow) {
@@ -48,70 +40,92 @@ struct Weapon {
     }
 };
 
-struct PassiveItem {
+class InventoryItem {
+public:
+    virtual ~InventoryItem() = default;
+    virtual string getName() const = 0;
+
+    virtual Stats statBonus() const { return { 0, 0, 0 }; }
+    virtual int speedBonus() const { return 0; }
+};
+
+class PassiveItem : public InventoryItem {
     string name;
     Stats bonus;
     string icon;
 
-    PassiveItem() {
-        name = "";
-        bonus = {0, 0, 0};
-        icon = "";
-    }
+public:
+    PassiveItem(string n, Stats b, string ic) : name(n), bonus(b), icon(ic) {}
 
-    PassiveItem(string n, Stats b, string ic) {
-        name = n;
-        bonus = b;
-        icon = ic;
-    }
+    string getName() const override { return name; }
+    Stats statBonus() const override { return bonus; }
 };
 
-struct Character {
+class SpeedItem : public InventoryItem {
+    string name;
+    int bonusSpeed;
+    string icon;
+
+public:
+    SpeedItem(string n, int s, string ic) : name(n), bonusSpeed(s), icon(ic) {}
+
+    string getName() const override { return name; }
+    int speedBonus() const override { return bonusSpeed; }
+};
+
+class Character {
+    vector<unique_ptr<InventoryItem>> inventory;
+    unique_ptr<Weapon> weapon;
+
+public:
     string name;
     int health;
 
     Stats baseStats;
     Stats stats;
 
-    bool hasWeapon;
-    Weapon weapon;
+    int baseSpeed;
+    int currentSpeed;
 
-    PassiveItem items[3];
-    int itemsCount;
-
-    Character(string n, int hp, Stats s) {
-        name = n;
-        health = hp;
-        baseStats = s;
-        stats = s;
-        hasWeapon = false;
-        weapon = Weapon();
-        itemsCount = 0;
+    Character(string n, int hp, Stats s, int spd)
+        : name(n), health(hp), baseStats(s), stats(s), baseSpeed(spd), currentSpeed(spd) {
     }
 
-    void applyPassive(PassiveItem it) {
-        if (itemsCount == 3) {
-            cout << "No passive slots\n";
-            return;
-        }
-        items[itemsCount] = it;
-        itemsCount++;
-
-        stats.str += it.bonus.str;
-        stats.intel += it.bonus.intel;
-        stats.agi += it.bonus.agi;
+    bool addItem(unique_ptr<InventoryItem> item) {
+        if (!item) return false;
+        inventory.push_back(move(item));
+        return true;
     }
 
-    void pickWeapon(Weapon w) {
-        if (!hasWeapon) {
-            weapon = w;
-            hasWeapon = true;
-            cout << "Picked weapon: " << weapon.name << "\n";
+    const vector<unique_ptr<InventoryItem>>& getInventory() const {
+        return inventory;
+    }
+
+    int getBaseSpeed() const { return baseSpeed; }
+
+    void setSpeed(int spd) { currentSpeed = spd; }
+
+    void recalcStatsFromInventory() {
+        stats = baseStats;
+        for (const auto& it : inventory) {
+            Stats b = it->statBonus();
+            stats.str += b.str;
+            stats.intel += b.intel;
+            stats.agi += b.agi;
+        }
+    }
+
+    void pickWeapon(unique_ptr<Weapon> w) {
+        if (!w) return;
+
+        if (!weapon) {
+            weapon = move(w);
+            cout << "Picked weapon: " << weapon->name << "\n";
             return;
         }
 
-        cout << "Swapped weapon: " << weapon.name << " -> " << w.name << "\n";
-        weapon = w;
+        cout << "Swapped weapon: " << weapon->name << " -> " << w->name << "\n";
+        weapon = move(w);
     }
 
     void takeDamage(int dmg) {
@@ -119,40 +133,53 @@ struct Character {
         if (health < 0) health = 0;
     }
 
-    void attack(Character &target, int timeNow) {
-        if (!hasWeapon) {
+    void attack(Character& target, int timeNow) {
+        if (!weapon) {
             cout << "No weapon\n";
             return;
         }
 
-        if (!weapon.use(timeNow)) {
-            cout << "Weapon cooldown: " << weapon.remaining(timeNow) << "\n";
+        if (!weapon->use(timeNow)) {
+            cout << "Weapon cooldown: " << weapon->remaining(timeNow) << "\n";
             return;
         }
 
-        int dmg = weapon.damage + stats.str;
+        int dmg = weapon->damage + stats.str;
         target.takeDamage(dmg);
 
         cout << name << " attacked " << target.name
-             << " for " << dmg
-             << ", target HP: " << target.health << "\n";
+            << " for " << dmg
+            << ", target HP: " << target.health << "\n";
     }
 };
 
+void updateCharacterSpeed(Character& c) {
+    int spd = c.getBaseSpeed();
+    for (const auto& it : c.getInventory()) {
+        spd += it->speedBonus();
+    }
+    if (spd < 0) spd = 0;
+    c.setSpeed(spd);
+}
+
 int main() {
-    Character hero("Hero", 100, {5, 2, 3});
-    Character enemy("Enemy", 80, {2, 1, 2});
+    Character hero("Hero", 100, { 5, 2, 3 }, 10);
+    Character enemy("Enemy", 80, { 2, 1, 2 }, 8);
 
-    PassiveItem ring("Ring", {2, 0, 1}, "ring.png");
-    PassiveItem book("Book", {0, 3, 0}, "book.png");
+    hero.addItem(make_unique<PassiveItem>("Ring", Stats{ 2, 0, 1 }, "ring.png"));
+    hero.addItem(make_unique<PassiveItem>("Book", Stats{ 0, 3, 0 }, "book.png"));
+    hero.addItem(make_unique<SpeedItem>("Boots", 5, "boots.png"));
 
-    hero.applyPassive(ring);
-    hero.applyPassive(book);
+    hero.recalcStatsFromInventory();
+    updateCharacterSpeed(hero);
 
-    Weapon sword("Sword", 10, 3, "sword.png");
-    Weapon axe("Axe", 14, 5, "axe.png");
+    cout << "Hero stats: STR=" << hero.stats.str
+        << " INT=" << hero.stats.intel
+        << " AGI=" << hero.stats.agi << "\n";
 
-    hero.pickWeapon(sword);
+    cout << "Hero speed: " << hero.currentSpeed << "\n";
+
+    hero.pickWeapon(make_unique<Weapon>("Sword", 10, 3, "sword.png"));
 
     int t = 0;
     hero.attack(enemy, t);
@@ -163,7 +190,7 @@ int main() {
     t = 3;
     hero.attack(enemy, t);
 
-    hero.pickWeapon(axe);
+    hero.pickWeapon(make_unique<Weapon>("Axe", 14, 5, "axe.png"));
 
     t = 4;
     hero.attack(enemy, t);
